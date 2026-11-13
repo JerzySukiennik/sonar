@@ -15,6 +15,7 @@ final class SonarAudio {
 
     var onFrame: ((Frame) -> Void)?
     private(set) var route = ""
+    private(set) var note = ""
     private(set) var sampleRate = 48000.0
     private(set) var period = 4096
     private(set) var binSize = 343.0 / 96000
@@ -38,15 +39,10 @@ final class SonarAudio {
         try? session.setPreferredSampleRate(48000)
         try? session.setPreferredIOBufferDuration(0.01)
         try session.setActive(true)
-        var micName = "mic"
-        if let mic = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-            try? session.setPreferredInput(mic)
-            if let bottom = mic.dataSources?.first(where: { $0.orientation == .bottom }) {
-                try? mic.setPreferredDataSource(bottom)
-                micName = "bottom mic"
-            }
-        }
+        let source = session.currentRoute.inputs.first?.selectedDataSource ?? session.inputDataSource
+        let micName = (source?.dataSourceName ?? "mic").lowercased() + " mic"
         latency = session.inputLatency
+        note = ""
         let input = engine.inputNode
         let inFormat = input.outputFormat(forBus: 0)
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else { throw Failure.noInput }
@@ -61,7 +57,7 @@ final class SonarAudio {
         let loop = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(period))!
         loop.frameLength = AVAudioFrameCount(period)
         let out = loop.floatChannelData![0]
-        for i in 0..<period { out[i] = proc.pc.wave[i] * 0.35 }
+        for i in 0..<period { out[i] = proc.pc.wave[i] * 0.8 }
         if player.engine == nil { engine.attach(player) }
         engine.connect(player, to: engine.mainMixerNode, format: playFormat)
         input.removeTap(onBus: 0)
@@ -114,13 +110,15 @@ final class SonarAudio {
     private func handle(at frameTime: TimeInterval, _ proc: EchoProcessor) {
         guard let echo = buffer.withUnsafeBufferPointer({ proc.process($0.baseAddress!) }) else { return }
         if calib < 24 {
-            if calib >= 7 && calib < 12 { levelA += echo.direct }
-            if calib >= 19 { levelB += echo.direct }
+            if calib >= 7 && calib < 12 { levelA += echo.tail / 5 }
+            if calib >= 19 { levelB += echo.tail / 5 }
             calib += 1
             if calib == 12 { player.pan = 1; proc.gainChanged() }
             if calib == 24 {
-                player.pan = levelA > levelB * 1.25 ? -1 : (levelB > levelA * 1.25 ? 1 : 0)
-                proc.gainChanged()
+                player.pan = levelA > levelB + 3 ? -1 : (levelB > levelA + 3 ? 1 : 0)
+                proc.reset()
+                note = String(format: "pan %.0f, room level with left %.1f dB, with right %.1f dB, chirp %d samples %.0f-%.0f Hz", player.pan, levelA, levelB,
+                              SonarConfig.chirp, SonarConfig.f1, SonarConfig.f2)
             }
             return
         }
@@ -130,6 +128,7 @@ final class SonarAudio {
             player.volume = max(0.05, player.volume * 0.8)
             proc.gainChanged()
         }
+        if note.hasPrefix("pan") && !note.contains("volume") { note += String(format: ", volume %.2f, mic peak %.3f", player.volume, echo.peak) }
         let samples = buffer.map { Int16(max(-1, min(1, $0)) * 32767) }
         onFrame?(Frame(time: frameTime + echo.lag / sampleRate - latency, echo: echo, samples: samples))
     }

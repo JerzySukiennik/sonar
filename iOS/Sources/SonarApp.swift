@@ -20,7 +20,7 @@ struct SonarApp: App {
 
 enum Demo {
     private static var args: [String] { ProcessInfo.processInfo.arguments }
-    private static var wanted: Bool { args.contains("--demo") || args.contains("--listen") }
+    private static var wanted: Bool { args.contains("--demo") || args.contains("--listen") || args.contains("--replay") }
 
     private static func checkDsp() {
         let proc = EchoProcessor(fs: 48000)
@@ -38,17 +38,22 @@ enum Demo {
             var best = 0
             for k in 0..<echo.profile.count where echo.profile[k] > echo.profile[best] { best = k }
             print(String(format: "dsp step %d lag %.3f snr %.1f ready %d echo at %.3f m (true %.3f m) value %.5f", step, echo.lag, echo.snr,
-                         echo.ready ? 1 : 0, Double(best) * proc.binSize, Double(echoLag) * proc.binSize, echo.profile[best]))
+                         echo.ready ? 1 : 0, EchoProcessor.rMin + (Double(best) + 0.5) * EchoProcessor.step, Double(echoLag) * proc.binSize, echo.profile[best]))
         }
     }
 
     static func prepare() {
+        if args.contains("--first-chirp") {
+            SonarConfig.chirp = 1024
+            SonarConfig.f1 = 3000
+            SonarConfig.f2 = 18000
+        }
         if args.contains("--dsp") {
             checkDsp()
             exit(0)
         }
         #if targetEnvironment(macCatalyst)
-        guard args.contains("--demo"), let cls = NSClassFromString("NSApplication") as? NSObject.Type,
+        guard args.contains("--demo") || args.contains("--replay"), let cls = NSClassFromString("NSApplication") as? NSObject.Type,
               let app = cls.value(forKey: "sharedApplication") as? NSObject else { return }
         let selector = NSSelectorFromString("setActivationPolicy:")
         typealias Setter = @convention(c) (AnyObject, Selector, Int) -> Bool
@@ -65,10 +70,11 @@ enum Demo {
             scene.sizeRestrictions?.maximumSize = size
             scene.titlebar?.titleVisibility = .hidden
             scene.titlebar?.toolbar = nil
-            scene.requestGeometryUpdate(.Mac(systemFrame: CGRect(origin: CGPoint(x: args.contains("--demo") ? -3000 : 80, y: 100), size: size)))
+            scene.requestGeometryUpdate(.Mac(systemFrame: CGRect(origin: CGPoint(x: args.contains("--listen") ? 80 : -3000, y: 100), size: size)))
         }
         #endif
         if args.contains("--demo") { model.simulate() }
+        if let i = args.firstIndex(of: "--replay"), i + 1 < args.count { model.replay(args[i + 1]) }
         if args.contains("--listen") {
             model.verbose = true
             model.start()

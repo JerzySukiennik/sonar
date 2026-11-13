@@ -1,4 +1,4 @@
-// Sonar: ties audio, tracking and mapping together and publishes what the screen shows.
+// Sonar: ties audio, tracking and plane finding together and publishes what the screen shows.
 import AVFoundation
 import SwiftUI
 import simd
@@ -6,10 +6,11 @@ import simd
 final class Recorder {
     private var handle: FileHandle?
     private var written = 0
+    private var folder: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
 
     func open(fs: Double, n: Int) {
         close()
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("last.sonarlog")
+        let url = folder.appendingPathComponent("last.sonarlog")
         FileManager.default.createFile(atPath: url.path, contents: nil)
         handle = try? FileHandle(forWritingTo: url)
         var header = Data("SONARLOG".utf8)
@@ -20,8 +21,12 @@ final class Recorder {
         written = 0
     }
 
+    func note(_ text: String) {
+        try? text.write(to: folder.appendingPathComponent("last.txt"), atomically: true, encoding: .utf8)
+    }
+
     func write(time: Double, lag: Double, transform: simd_float4x4?, samples: [Int16]) {
-        guard let handle, written < 2400 else { return }
+        guard let handle, written < 3000 else { return }
         var data = Data(capacity: 96 + samples.count * 2)
         append(&data, time)
         append(&data, lag)
@@ -52,19 +57,19 @@ final class SonarModel: ObservableObject {
     @Published var detail = ""
     @Published var scope: [Float] = []
     @Published var pings = 0
+    @Published var coverage = 0.0
+    @Published var surfaces = 0
     @Published var dark = true { didSet { renderer.dim(dark ? 1 : 0.5) } }
-    @Published var sharpness = 0.4 { didSet { let c = Float(sharpness); work.async { self.cut = c; self.publishMap() } } }
     let renderer = MapRenderer()
     let tracker = Tracker()
     var startTracking: (() -> Void)?
     var verbose = false
     private let audio = SonarAudio()
-    private let mapper = Mapper()
+    private let finder = PlaneFinder()
     private let recorder = Recorder()
     private let work = DispatchQueue(label: "fun.gzowo.sonar.map", qos: .userInitiated)
-    private var trail: [SIMD3<Float>] = []
     private var frames = 0
-    private var cut: Float = 0.4
+    private var fresh = true
 
     init() {
         audio.onFrame = { [weak self] frame in
@@ -93,7 +98,11 @@ final class SonarModel: ObservableObject {
                     return
                 }
                 let fs = self.audio.sampleRate, n = self.audio.period
-                self.work.async { self.recorder.open(fs: fs, n: n) }
+                self.work.async {
+                    self.recorder.open(fs: fs, n: n)
+                    self.fresh = true
+                    self.frames = 0
+                }
                 self.running = true
                 self.status = "Listening"
                 UIApplication.shared.isIdleTimerDisabled = true
@@ -103,7 +112,11 @@ final class SonarModel: ObservableObject {
 
     func stop() {
         audio.stop()
-        work.async { self.recorder.close() }
+        let note = audio.route + "\n" + audio.note + "\n"
+        work.async {
+            self.recorder.note(note + "pings \(self.finder.pings), surfaces \(self.finder.planes.count), coverage \(self.finder.coverage)\n")
+            self.recorder.close()
+        }
         running = false
         status = pings > 0 ? "Paused · \(pings) pings" : "Ready"
         UIApplication.shared.isIdleTimerDisabled = false
@@ -111,10 +124,12 @@ final class SonarModel: ObservableObject {
 
     func clear() {
         work.async {
-            self.mapper.reset(around: self.trail.last ?? SIMD3<Float>(repeating: 0))
-            self.trail = []
+            self.fresh = true
+            self.finder.reset(around: self.finder.trail.last ?? self.finder.center)
             DispatchQueue.main.async {
                 self.pings = 0
+                self.coverage = 0
+                self.surfaces = 0
                 self.renderer.show(points: [], values: [])
                 self.renderer.show(path: [])
             }
@@ -126,84 +141,149 @@ final class SonarModel: ObservableObject {
         let echo = frame.echo
         let pose = tracker.pose(at: frame.time)
         recorder.write(time: frame.time, lag: echo.lag, transform: pose?.transform, samples: frame.samples)
-        var placed = false
+        if frames == 1 { recorder.note(audio.route + "\n" + audio.note + "\n") }
         if let pose, echo.ready {
-            if !mapper.started { mapper.reset(around: pose.position) }
-            placed = mapper.add(position: pose.position, axis: pose.axis, profile: echo.profile, binSize: Float(audio.binSize),
-                                rMin: Float(EchoProcessor.rMin), rMax: Float(EchoProcessor.rMax))
-            if placed { trail.append(pose.position) }
+            if fresh {
+                finder.reset(around: pose.position)
+                fresh = false
+            }
+            if finder.add(position: pose.position, profile: echo.profile, rMin: Float(EchoProcessor.rMin)), finder.pings % 6 == 0 {
+                finder.detect()
+                publishMap()
+            }
         }
-        if placed && mapper.count % 8 == 0 { publishMap() }
         if verbose && frames % 6 == 0 {
             print(String(format: "frame %d lag %.3f direct %.4f snr %.1f peak %.3f ready %d", frames, echo.lag, echo.direct, echo.snr, echo.peak, echo.ready ? 1 : 0))
         }
         guard frames % 2 == 0 else { return }
-        let count = mapper.count, tracking = tracker.isTracking
+        let count = finder.pings, tracking = tracker.isTracking, cover = Double(finder.coverage), found = finder.planes.count
         let text = audio.route + String(format: " · direct %.0f dB", echo.snr)
         DispatchQueue.main.async {
             guard self.running else { return }
             self.scope = echo.scope
             self.pings = count
+            self.coverage = cover
+            self.surfaces = found
             self.detail = text
             if echo.peak > 0.95 { self.status = "Too loud. Turn the volume down." }
             else if echo.snr < 25 { self.status = "No sound path. Turn the volume up." }
             else if !tracking { self.status = "Finding position. Move slowly." }
-            else { self.status = "Scanning · \(count) pings" }
+            else if cover < 1 { self.status = "Move more · \(Int(cover * 100))%" }
+            else { self.status = "\(found) surfaces · \(count) pings" }
         }
     }
 
     private func publishMap() {
-        let map = mapper.points(threshold: cut)
-        let path = trail
+        let map = finder.points()
+        let path = finder.trail
         DispatchQueue.main.async {
             self.renderer.show(points: map.positions, values: map.values)
             self.renderer.show(path: path)
         }
     }
 
+    private func report(_ title: String) {
+        print("\(title): pings \(finder.pings) coverage \(String(format: "%.2f", finder.coverage)) surfaces \(finder.planes.count)")
+        let here = finder.trail.last ?? finder.center
+        for plane in finder.planes {
+            print(String(format: "  normal %+.2f %+.2f %+.2f  distance %.2f m  strength %.2f  contrast %.1f", plane.normal.x, plane.normal.y, plane.normal.z,
+                         finder.range(of: plane, from: here), plane.strength, plane.contrast))
+        }
+    }
+
     func simulate() {
         work.async {
             let walls: [(axis: Int, at: Float)] = [(0, -2.0), (0, 2.4), (1, -1.3), (1, 1.2), (2, -1.6), (2, 2.8)]
-            let bin = Float(EchoProcessor.speed / 96000), bins = Int(Float(EchoProcessor.rMax) / bin) + 2
-            self.mapper.reset(around: SIMD3<Float>(repeating: 0))
+            let cells = Int((EchoProcessor.rMax - EchoProcessor.rMin) / EchoProcessor.step), step = Float(EchoProcessor.step), rMin = Float(EchoProcessor.rMin)
+            self.finder.reset(around: SIMD3<Float>(repeating: 0))
             var seed: UInt64 = 42
-            var profile = [Float](repeating: 0, count: bins)
-            for step in 0..<420 {
-                let t = Float(step) * 0.085
-                let p = SIMD3<Float>(0.55 * sin(0.9 * t) + 0.25 * sin(2.3 * t), 0.35 * sin(1.3 * t + 1), 0.5 * cos(0.7 * t) + 0.2 * sin(1.9 * t))
-                let axis = simd_normalize(SIMD3<Float>(cos(0.5 * t), 0.6 * sin(0.8 * t), sin(0.5 * t)))
-                for k in 0..<bins { profile[k] = 0 }
+            var profile = [Float](repeating: 0, count: cells)
+            for tick in 0..<360 {
+                let t = Float(tick) * 0.085
+                let p = SIMD3<Float>(0.22 * sin(0.9 * t) + 0.1 * sin(2.3 * t), 0.2 * sin(1.3 * t + 1), 0.24 * cos(0.7 * t) + 0.08 * sin(1.9 * t))
+                for c in 0..<cells { profile[c] = 0 }
                 for wall in walls {
-                    var normal = SIMD3<Float>(repeating: 0)
-                    normal[wall.axis] = wall.at > p[wall.axis] ? 1 : -1
-                    let beam = 0.5 + 0.5 * simd_dot(axis, normal)
-                    let amp = 0.01 * (0.25 + 0.75 * beam * beam), center = abs(wall.at - p[wall.axis]) / bin
-                    for k in max(0, Int(center) - 8)...min(bins - 1, Int(center) + 8) {
-                        let x = (Float(k) - center) / 3
-                        profile[k] += amp * exp(-x * x)
+                    let center = (abs(wall.at - p[wall.axis]) - rMin) / step
+                    for c in max(0, Int(center) - 4)...min(cells - 1, Int(center) + 4) {
+                        let x = (Float(c) - center) / 1.2
+                        profile[c] += 0.01 * exp(-x * x)
                     }
                 }
-                for _ in 0..<6 {
+                for _ in 0..<10 {
                     seed = seed &* 6364136223846793005 &+ 1442695040888963407
-                    profile[140 + Int((seed >> 33) % UInt64(bins - 140))] += 0.004
+                    profile[Int((seed >> 33) % UInt64(cells))] += 0.006
                 }
-                if self.mapper.add(position: p, axis: axis, profile: profile, binSize: bin, rMin: Float(EchoProcessor.rMin), rMax: Float(EchoProcessor.rMax)) {
-                    self.trail.append(p)
-                }
+                profile[6] += 0.02
+                profile[14] += 0.015
+                _ = self.finder.add(position: p, profile: profile, rMin: rMin)
             }
-            let map = self.mapper.points(threshold: self.cut)
-            let onWall = map.positions.filter { q in walls.contains { abs(q[$0.axis] - $0.at) < 0.08 } }.count
-            print("selftest pings \(self.mapper.count) points \(map.positions.count) on a wall \(onWall)")
+            self.finder.detect()
+            self.report("selftest (true walls at 2.0 2.4 1.3 1.2 1.6 2.8 m along -x +x -y +y -z +z)")
             let scope = profile.enumerated().reduce(into: [Float](repeating: -60, count: 160)) { out, item in
-                let s = item.offset * 160 / bins
+                let s = 26 + item.offset * 134 / cells
                 out[s] = max(out[s], 20 * log10(item.element + 1e-3))
             }
-            let count = self.mapper.count
+            let count = self.finder.pings, found = self.finder.planes.count
             DispatchQueue.main.async {
                 self.pings = count
+                self.coverage = 1
+                self.surfaces = found
                 self.scope = scope
-                self.status = "Scanning · \(count) pings"
-                self.detail = "48 kHz · Speaker to bottom mic · direct 64 dB"
+                self.status = "\(found) surfaces · \(count) pings"
+                self.detail = "48 kHz · Speaker to mic · direct 64 dB"
+            }
+            self.publishMap()
+        }
+    }
+
+    func replay(_ path: String) {
+        work.async {
+            guard let raw = FileManager.default.contents(atPath: path), raw.count > 24, String(data: raw.prefix(8), encoding: .utf8) == "SONARLOG" else {
+                print("replay: cannot read \(path)")
+                return
+            }
+            let fs = raw.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: Double.self) }
+            let n = Int(raw.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 16, as: Int32.self) })
+            let proc = EchoProcessor(fs: fs)
+            var offset = 24, total = 0, used = 0
+            var frame = [Float](repeating: 0, count: n)
+            var last: Echo?
+            var fresh = true
+            while offset + 88 + n * 2 <= raw.count {
+                let has = raw.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 16, as: Int32.self) }
+                var columns = [SIMD4<Float>](repeating: SIMD4<Float>(repeating: 0), count: 4)
+                raw.withUnsafeBytes { bytes in
+                    for c in 0..<4 {
+                        for r in 0..<4 { columns[c][r] = bytes.loadUnaligned(fromByteOffset: offset + 24 + (c * 4 + r) * 4, as: Float.self) }
+                    }
+                    for i in 0..<n { frame[i] = Float(bytes.loadUnaligned(fromByteOffset: offset + 88 + i * 2, as: Int16.self)) / 32767 }
+                }
+                offset += 88 + n * 2
+                total += 1
+                guard let echo = frame.withUnsafeBufferPointer({ proc.process($0.baseAddress!) }) else { continue }
+                last = echo
+                guard has != 0, echo.ready else { continue }
+                let m = simd_float4x4(columns[0], columns[1], columns[2], columns[3])
+                let p = m * Tracker.speakerOffset
+                let position = SIMD3<Float>(p.x, p.y, p.z)
+                if fresh {
+                    self.finder.reset(around: position)
+                    fresh = false
+                }
+                if self.finder.add(position: position, profile: echo.profile, rMin: Float(EchoProcessor.rMin)) { used += 1 }
+            }
+            self.finder.detect()
+            if let last {
+                print(String(format: "replay: frames %d, used %d, direct lag %.2f, direct to floor %.1f dB, mic peak %.3f", total, used, last.lag, last.snr, last.peak))
+            }
+            self.report("replay")
+            let count = self.finder.pings, found = self.finder.planes.count, cover = Double(self.finder.coverage), scope = last?.scope ?? []
+            DispatchQueue.main.async {
+                self.pings = count
+                self.coverage = cover
+                self.surfaces = found
+                self.scope = scope
+                self.status = cover < 1 ? "Move more · \(Int(cover * 100))%" : "\(found) surfaces · \(count) pings"
             }
             self.publishMap()
         }

@@ -51,7 +51,9 @@ case "$MODE" in
     mkdir -p "$ROOT/Niepotrzebne/logs"
     OUT="$ROOT/Niepotrzebne/logs/$(date +%Y%m%d-%H%M%S).sonarlog"
     xcrun devicectl device copy from --device "$UDID" --domain-type appDataContainer --domain-identifier fun.gzowo.sonar.ios \
-      --source Documents/last.sonarlog --destination "$OUT"
+      --source Documents/last.sonarlog --destination "$OUT" --timeout 240
+    xcrun devicectl device copy from --device "$UDID" --domain-type appDataContainer --domain-identifier fun.gzowo.sonar.ios \
+      --source Documents/last.txt --destination "${OUT%.sonarlog}.txt" >/dev/null 2>&1 || true
     echo "$OUT"
     ;;
   *) echo "Usage: Scripts/ios.sh mac|build|install|device|log" >&2; exit 1 ;;

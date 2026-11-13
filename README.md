@@ -32,21 +32,23 @@ Open `index.html` in Chrome, press Start and allow the microphone. Use the built
 
 ## iPhone: rough 3D map (`iOS/`)
 
-A native app that tries to turn the same echoes into a 3D map. Status: builds, signed, verified on synthetic data and off-screen on a Mac. Not yet tested on a real phone.
+A native app that tries to find the flat surfaces of a room from the same echoes. Status: runs on an iPhone XR, the plane finder is verified on a synthetic room, real scans so far had too little movement to resolve anything.
 
-- The phone plays 3 to 18 kHz chirps about 12 times a second and records with the bottom microphone.
+- The phone plays 2 to 15 kHz chirps about 12 times a second and records with its own microphone.
 - ARKit gives the phone pose for every ping. One microphone only knows distance, so direction comes from moving the phone.
-- A slow background is subtracted from each impulse response, which removes the phone's own sound and keeps only echoes that change as the phone moves.
-- Each ping is backprojected into a 5 cm voxel grid (6.4 x 3.2 x 6.4 m) as spheres around the speaker position. Echoes that agree from many positions pile up on real surfaces.
-- Walls reflect like mirrors, so a ping paints only the patch of wall straight in front of it. Move the phone in every direction to paint more.
+- Time zero is the first arrival of the phone's own sound. The iPhone has two speakers 14 cm apart, so the loudest arrival is not stable.
+- Walls reflect like mirrors: a wall at distance `d` along normal `n` is heard at range `d - n.p` from position `p`. Every ping votes for all `(n, d)` that explain its echoes (800 directions, 2.5 cm steps). A real wall collects votes from every position. Echoes at a fixed range, like the hand and body of the person holding the phone, smear out instead.
+- Nothing is shown until the phone has moved enough in all three axes (about 25 cm each way), because before that every direction fits equally well. The first version painted spheres into a voxel grid and with little movement the result was a ball around the phone.
 - Every session is saved to `Documents/last.sonarlog` (raw audio and poses) for offline tuning.
 
-Build with `Scripts/ios.sh`: `mac` (Catalyst build for checks), `device` (sign and install over cable), `log` (pull the last session from the phone). Needs XcodeGen.
+Build with `Scripts/ios.sh`: `mac` (Catalyst build for checks), `device` (sign and install, works over Wi-Fi once the phone is paired), `log` (pull the last session from the phone). Needs XcodeGen.
 
 Checks without a phone, on the Catalyst build:
 
 - `Sonar --dsp`: synthetic frames through the pulse compressor, prints the measured lag and echo range.
-- `Sonar --demo --shot out.png`: a synthetic room through the mapper and the renderer.
+- `Sonar --demo --shot out.png`: a synthetic room with fixed-range clutter through the plane finder and the renderer.
+- `Sonar --replay scan.sonarlog --shot out.png`: a real recording from the phone through the same code. Add `--first-chirp` for logs recorded with the first chirp (1024 samples, 3 to 18 kHz).
+- `Niepotrzebne/analyze.py scan.sonarlog`: levels, timing and echo table of a recording.
 
 ## Files
 

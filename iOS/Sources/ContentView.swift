@@ -57,11 +57,28 @@ struct ContentView: View {
                 .foregroundStyle(.white.opacity(0.42))
                 .padding(.horizontal, 20)
                 .padding(.top, 5)
+                if model.running && model.coverage < 1 {
+                    VStack(spacing: 8) {
+                        GeometryReader { box in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(.white.opacity(0.12))
+                                Capsule().fill(accent).frame(width: max(4, box.size.width * model.coverage))
+                            }
+                        }
+                        .frame(height: 4)
+                        Text("Wave the phone in big slow loops: up and down, left and right, forward and back.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.white.opacity(0.6))
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                }
                 Spacer()
                 if !model.running && model.pings == 0 {
                     VStack(spacing: 10) {
-                        Text("Paint the room with sound").font(.system(size: 22, weight: .medium))
-                        Text("Press Start, point the bottom of the phone at things and move it slowly in every direction. Echoes that agree pile up on real walls.")
+                        Text("Find the walls with sound").font(.system(size: 22, weight: .medium))
+                        Text("Press Start and wave the phone in big slow loops in every direction, about half a metre each way. A wall shows up once its echo fits from every position.")
                             .font(.system(size: 14))
                             .foregroundStyle(.white.opacity(0.55))
                             .multilineTextAlignment(.center)
@@ -77,11 +94,6 @@ struct ContentView: View {
 
     private var controls: some View {
         VStack(spacing: 14) {
-            HStack(spacing: 12) {
-                Text("More").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
-                Slider(value: $model.sharpness, in: 0.15...0.85).tint(.white)
-                Text("Sharper").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
-            }
             HStack {
                 Button { model.clear() } label: {
                     Text("Clear").font(.system(size: 15)).frame(width: 84, height: 44).background(.white.opacity(0.12), in: Capsule())
