@@ -1,9 +1,10 @@
 # Sonar: reads a .sonarlog pulled from the phone and reports what the echoes and poses actually look like.
-# Usage: python3 analyze.py scan.sonarlog
+# Usage: python3 analyze.py scan.sonarlog [chirpSamples f1 f2]   (defaults match the current app: 2048 2000 15000)
 import struct, sys
 import numpy as np
 
-C, CHIRP, F1, F2 = 343.0, 1024, 3000.0, 18000.0
+C = 343.0
+CHIRP, F1, F2 = (int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])) if len(sys.argv) > 4 else (2048, 2000.0, 15000.0)
 
 
 def load(path):
@@ -52,12 +53,14 @@ def main():
     print(f"stored direct lag first/last {lags[0]:.2f} {lags[-1]:.2f}  min/max {lags.min():.2f} {lags.max():.2f}")
     H = np.array([np.fft.fft(f[4]) * g for f in frames])
     coarse = np.fft.ifft(H, axis=1)
-    own = np.abs(coarse).argmax(axis=1)
-    print("recomputed direct lag per frame:", " ".join(str(v) for v in own[:: max(1, len(own) // 24)]))
+    env = np.abs(coarse)
+    own = np.array([next((q % n for q in range(m - 96, m + 1) if e[q % n] >= 0.4 * e[m] and e[q % n] >= e[(q - 1) % n] and e[q % n] >= e[(q + 1) % n]), m) for e, m in zip(env, env.argmax(axis=1))])
+    print("first-arrival lag per frame:", " ".join(str(v) for v in own[:: max(1, len(own) // 24)]))
     k = np.arange(n)
     tau = np.median(own[len(own) // 2:])
     h = np.fft.ifft(H * np.exp(2j * np.pi * k * tau / n), axis=1)
-    ref = np.median(np.abs(h[:, 0]))
+    ref = np.median(np.abs(h[:, :48]).max(axis=1))
+    print("own sound, first 48 samples (dB):", " ".join(f"{v:.0f}" for v in 20 * np.log10(np.abs(h).mean(axis=0)[:48] / ref + 1e-9)))
     tail = np.sqrt(np.mean(np.abs(h[:, n // 4: n // 2]) ** 2))
     print(f"direct amplitude {ref:.4f}  floor (far lags) {20 * np.log10(tail / ref):.1f} dB re direct")
     mean = np.abs(h).mean(axis=0)

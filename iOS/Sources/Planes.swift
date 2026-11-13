@@ -15,7 +15,8 @@ final class PlaneFinder {
     static let step: Float = 0.025
     static let rhoMin: Float = -3
     static let bins = 400
-    static let needed: Float = 0.07
+    static var needed: Float = 0.04
+    static var minContrast: Float = 3
     private let normals: [SIMD3<Float>]
     private var votes: [Float]
     private var mean: [Float]
@@ -142,15 +143,45 @@ final class PlaneFinder {
                     if x < 0.3 * top || x < v[o + b - 1] || x < v[o + b + 1] { continue }
                     let base = max(mean[b - 2], mean[b - 1], mean[b], mean[b + 1], mean[b + 2])
                     let contrast = x / (base + 1e-9)
-                    if contrast >= 3 { candidates.append((x, j, b, contrast)) }
+                    if contrast >= PlaneFinder.minContrast { candidates.append((x, j, b, contrast)) }
                 }
             }
         }
         candidates.sort { $0.value > $1.value }
         var found: [Plane] = []
         for c in candidates {
-            let normal = normals[c.direction], rho = PlaneFinder.rhoMin + Float(c.bin) * PlaneFinder.step
-            if found.contains(where: { simd_dot($0.normal, normal) > 0.7 && abs($0.rho - rho) < 0.4 }) { continue }
+            var normal = normals[c.direction]
+            var pull = SIMD3<Float>(repeating: 0)
+            votes.withUnsafeBufferPointer { v in
+                for k in 0..<count where simd_dot(normals[k], normal) > 0.82 {
+                    var best: Float = 0
+                    for b in max(0, c.bin - 4)...min(bins - 1, c.bin + 4) { best = max(best, v[k * bins + b]) }
+                    let w = best - 0.6 * c.value
+                    if w > 0 { pull += normals[k] * w }
+                }
+            }
+            if simd_length(pull) > 0 { normal = simd_normalize(pull) }
+            if abs(normal.y) > 0.85 {
+                normal = SIMD3<Float>(0, normal.y > 0 ? 1 : -1, 0)
+            } else if abs(normal.y) < 0.35 {
+                normal = simd_normalize(SIMD3<Float>(normal.x, 0, normal.z))
+            } else {
+                continue
+            }
+            var nearest = c.direction, closest: Float = -2
+            for k in 0..<count {
+                let d = simd_dot(normals[k], normal)
+                if d > closest { closest = d; nearest = k }
+            }
+            var bin = c.bin, value: Float = -1
+            votes.withUnsafeBufferPointer { v in
+                for b in max(0, c.bin - 8)...min(bins - 1, c.bin + 8) where v[nearest * bins + b] > value {
+                    value = v[nearest * bins + b]
+                    bin = b
+                }
+            }
+            let rho = PlaneFinder.rhoMin + Float(bin) * PlaneFinder.step
+            if found.contains(where: { simd_dot($0.normal, normal) > 0.5 && abs($0.rho - rho) < 0.35 }) { continue }
             found.append(Plane(normal: normal, rho: rho, strength: c.value / top, contrast: c.contrast))
             if found.count == 6 { break }
         }

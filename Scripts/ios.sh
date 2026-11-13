@@ -47,14 +47,23 @@ case "$MODE" in
   device) build_phone; install_phone ;;
   log)
     UDID="$(find_phone)"
-    if [ -z "$UDID" ]; then echo "No connected iPhone: plug it in, unlock it and trust this Mac" >&2; exit 1; fi
+    if [ -z "$UDID" ]; then echo "No connected iPhone: unlock it on the same Wi-Fi or plug it in" >&2; exit 1; fi
     mkdir -p "$ROOT/Niepotrzebne/logs"
-    OUT="$ROOT/Niepotrzebne/logs/$(date +%Y%m%d-%H%M%S).sonarlog"
-    xcrun devicectl device copy from --device "$UDID" --domain-type appDataContainer --domain-identifier fun.gzowo.sonar.ios \
-      --source Documents/last.sonarlog --destination "$OUT" --timeout 240
-    xcrun devicectl device copy from --device "$UDID" --domain-type appDataContainer --domain-identifier fun.gzowo.sonar.ios \
-      --source Documents/last.txt --destination "${OUT%.sonarlog}.txt" >/dev/null 2>&1 || true
-    echo "$OUT"
+    files() {
+      xcrun devicectl device info files --device "$UDID" --domain-type appDataContainer --domain-identifier fun.gzowo.sonar.ios \
+        --subdirectory Documents 2>/dev/null | awk '/^(scan-|last\.)/{print $1}'
+    }
+    for NAME in $(files); do
+      OUT="$ROOT/Niepotrzebne/logs/$NAME"
+      case "$NAME" in *.sonarlog) [ -s "$OUT" ] && continue ;; esac
+      for TRY in 1 2 3; do
+        xcrun devicectl device copy from --device "$UDID" --domain-type appDataContainer --domain-identifier fun.gzowo.sonar.ios \
+          --source "Documents/$NAME" --destination "$OUT" --timeout 240 >/dev/null 2>&1 || true
+        [ -s "$OUT" ] && break
+        rm -f "$OUT"
+      done
+      [ -s "$OUT" ] && echo "$OUT"
+    done
     ;;
   *) echo "Usage: Scripts/ios.sh mac|build|install|device|log" >&2; exit 1 ;;
 esac

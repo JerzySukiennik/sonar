@@ -6,12 +6,22 @@ import simd
 final class Recorder {
     private var handle: FileHandle?
     private var written = 0
+    private var name = ""
     private var folder: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
 
     func open(fs: Double, n: Int) {
         close()
-        let url = folder.appendingPathComponent("last.sonarlog")
-        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let files = FileManager.default
+        let old = ((try? files.contentsOfDirectory(atPath: folder.path)) ?? []).filter { $0.hasPrefix("scan-") || $0.hasPrefix("last.") }.sorted()
+        let logs = old.filter { $0.hasSuffix(".sonarlog") }
+        for file in old where file.hasPrefix("last.") || logs.dropLast(4).contains(where: { file.hasPrefix($0.dropLast(9)) }) {
+            try? files.removeItem(at: folder.appendingPathComponent(file))
+        }
+        let format = DateFormatter()
+        format.dateFormat = "yyyyMMdd-HHmmss"
+        name = "scan-" + format.string(from: Date())
+        let url = folder.appendingPathComponent(name + ".sonarlog")
+        files.createFile(atPath: url.path, contents: nil)
         handle = try? FileHandle(forWritingTo: url)
         var header = Data("SONARLOG".utf8)
         append(&header, fs)
@@ -22,7 +32,8 @@ final class Recorder {
     }
 
     func note(_ text: String) {
-        try? text.write(to: folder.appendingPathComponent("last.txt"), atomically: true, encoding: .utf8)
+        guard !name.isEmpty else { return }
+        try? text.write(to: folder.appendingPathComponent(name + ".txt"), atomically: true, encoding: .utf8)
     }
 
     func write(time: Double, lag: Double, transform: simd_float4x4?, samples: [Int16]) {
@@ -100,7 +111,6 @@ final class SonarModel: ObservableObject {
                 let fs = self.audio.sampleRate, n = self.audio.period
                 self.work.async {
                     self.recorder.open(fs: fs, n: n)
-                    self.fresh = true
                     self.frames = 0
                 }
                 self.running = true

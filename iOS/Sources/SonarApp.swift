@@ -48,6 +48,8 @@ enum Demo {
             SonarConfig.f1 = 3000
             SonarConfig.f2 = 18000
         }
+        if let i = args.firstIndex(of: "--needed"), i + 1 < args.count, let v = Float(args[i + 1]) { PlaneFinder.needed = v }
+        if let i = args.firstIndex(of: "--contrast"), i + 1 < args.count, let v = Float(args[i + 1]) { PlaneFinder.minContrast = v }
         if args.contains("--dsp") {
             checkDsp()
             exit(0)
