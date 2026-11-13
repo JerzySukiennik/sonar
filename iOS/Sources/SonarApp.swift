@@ -50,6 +50,7 @@ enum Demo {
         }
         if let i = args.firstIndex(of: "--needed"), i + 1 < args.count, let v = Float(args[i + 1]) { PlaneFinder.needed = v }
         if let i = args.firstIndex(of: "--contrast"), i + 1 < args.count, let v = Float(args[i + 1]) { PlaneFinder.minContrast = v }
+        if let i = args.firstIndex(of: "--margin"), i + 1 < args.count, let v = Float(args[i + 1]) { PlaneFinder.margin = v }
         if args.contains("--dsp") {
             checkDsp()
             exit(0)

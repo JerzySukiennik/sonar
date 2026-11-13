@@ -21,7 +21,7 @@ def load(path):
         pos += 64
         pcm = np.frombuffer(raw, "<i2", count, pos).astype(np.float64) / 32767
         pos += count * 2
-        frames.append((t, lag, bool(has), m, pcm))
+        frames.append((t, lag, has == 1, m, pcm))
     return fs, n, frames
 
 

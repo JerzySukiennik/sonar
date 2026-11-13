@@ -13,14 +13,29 @@ struct Pose {
 
 final class Tracker: NSObject {
     static let speakerOffset = SIMD4<Float>(0.136, -0.023, 0, 1)
+    static let reasons: [Int32: String] = [
+        0: "Starting the camera",
+        -1: "Starting the camera",
+        -2: "Moving too fast for the camera",
+        -3: "Too dark or too plain for the camera",
+        -4: "Camera is finding the room again",
+        -5: "Camera tracking is off"
+    ]
     private var times: [TimeInterval] = []
     private var transforms: [simd_float4x4] = []
     private let lock = NSLock()
-    private var normal = false
+    private var code: Int32 = 0
+    private var tally: [Int32: Int] = [:]
 
-    var isTracking: Bool {
+    var state: Int32 {
         lock.lock(); defer { lock.unlock() }
-        return normal
+        return code
+    }
+
+    var summary: String {
+        lock.lock(); defer { lock.unlock() }
+        let total = max(1, tally.values.reduce(0, +))
+        return tally.sorted { $0.value > $1.value }.map { "\($0.key == 1 ? "tracking" : (Tracker.reasons[$0.key] ?? "other")) \($0.value * 100 / total)%" }.joined(separator: ", ")
     }
 
     func push(_ t: TimeInterval, _ m: simd_float4x4) {
@@ -40,7 +55,7 @@ final class Tracker: NSObject {
         while i > 0 && times[i - 1] >= t { i -= 1 }
         let b = transforms[i], tb = times[i]
         let a = i > 0 ? transforms[i - 1] : b, ta = i > 0 ? times[i - 1] : tb
-        if tb - ta > 0.1 { return nil }
+        if tb - ta > 0.1 || abs(tb - t) > 0.1 && abs(ta - t) > 0.1 { return nil }
         let f = tb > ta ? Float(min(1, max(0, (t - ta) / (tb - ta)))) : 0
         let m = f < 0.5 ? a : b
         let p = simd_mix(a * Tracker.speakerOffset, b * Tracker.speakerOffset, SIMD4<Float>(repeating: f))
@@ -48,20 +63,30 @@ final class Tracker: NSObject {
         return Pose(position: SIMD3<Float>(p.x, p.y, p.z), axis: simd_normalize(SIMD3<Float>(x.x, x.y, x.z)), transform: m)
     }
 
-    fileprivate func set(normal value: Bool) {
+    fileprivate func set(_ value: Int32) {
         lock.lock(); defer { lock.unlock() }
-        normal = value
+        code = value
+        tally[value, default: 0] += 1
     }
 }
 
 #if !targetEnvironment(macCatalyst)
 extension Tracker: ARSessionDelegate {
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        if case .normal = frame.camera.trackingState {
-            set(normal: true)
+        switch frame.camera.trackingState {
+        case .normal:
+            set(1)
             push(frame.timestamp, frame.camera.transform)
-        } else {
-            set(normal: false)
+        case .notAvailable:
+            set(-5)
+        case .limited(let reason):
+            switch reason {
+            case .initializing: set(-1)
+            case .excessiveMotion: set(-2)
+            case .insufficientFeatures: set(-3)
+            case .relocalizing: set(-4)
+            @unknown default: set(-1)
+            }
         }
     }
 }

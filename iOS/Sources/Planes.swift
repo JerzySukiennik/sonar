@@ -1,5 +1,6 @@
 // Sonar: finds flat surfaces. A wall at distance d along normal n is heard at range d - n.p from phone position p,
 // so every ping votes for all (n, d) that explain its echoes. Real walls collect votes from every position; clutter smears out.
+// A second map built from the same echoes paired with wrong positions shows what chance and clutter alone produce.
 import Foundation
 import simd
 
@@ -17,14 +18,19 @@ final class PlaneFinder {
     static let bins = 400
     static var needed: Float = 0.04
     static var minContrast: Float = 3
+    static var margin: Float = 1.3
     private let normals: [SIMD3<Float>]
     private var votes: [Float]
+    private var chance: [Float]
     private var mean: [Float]
     private(set) var center = SIMD3<Float>(repeating: 0)
     private(set) var pings = 0
     private(set) var planes: [Plane] = []
     private(set) var coverage: Float = 0
     private(set) var trail: [SIMD3<Float>] = []
+    private(set) var ratio: Float = 0
+    private var chancePings = 0
+    private var seed: UInt64 = 7
     private var last = SIMD3<Float>(repeating: .infinity)
     private var sum = SIMD3<Float>(repeating: 0)
     private var squares = SIMD3<Float>(repeating: 0)
@@ -42,15 +48,21 @@ final class PlaneFinder {
         }
         normals = list
         votes = [Float](repeating: 0, count: PlaneFinder.directions * PlaneFinder.bins)
+        chance = votes
         mean = [Float](repeating: 0, count: PlaneFinder.bins)
     }
 
     func reset(around point: SIMD3<Float>) {
         center = point
-        for i in votes.indices { votes[i] = 0 }
+        for i in votes.indices {
+            votes[i] = 0
+            chance[i] = 0
+        }
         pings = 0
+        chancePings = 0
         planes = []
         coverage = 0
+        ratio = 0
         trail = []
         last = SIMD3<Float>(repeating: .infinity)
         sum = SIMD3<Float>(repeating: 0)
@@ -59,22 +71,9 @@ final class PlaneFinder {
         clutter = []
     }
 
-    func add(position p: SIMD3<Float>, profile: [Float], rMin: Float) -> Bool {
-        if simd_distance(p, last) < 0.015 { return false }
-        guard profile.contains(where: { $0 > 0 }) else { return false }
-        last = p
-        let d = p - center
-        let bins = PlaneFinder.bins, step = PlaneFinder.step, rhoMin = PlaneFinder.rhoMin, count = profile.count
-        if clutter.count != count {
-            clutter = [Float](repeating: 0, count: count)
-            moving = clutter
-        }
-        let alpha = max(0.05, 1 / Float(pings + 1))
-        for i in 0..<count {
-            clutter[i] += alpha * (profile[i] - clutter[i])
-            moving[i] = max(0, profile[i] - 1.2 * clutter[i])
-        }
-        votes.withUnsafeMutableBufferPointer { v in
+    private func vote(_ target: inout [Float], _ d: SIMD3<Float>, _ rMin: Float) {
+        let bins = PlaneFinder.bins, step = PlaneFinder.step, rhoMin = PlaneFinder.rhoMin, count = moving.count
+        target.withUnsafeMutableBufferPointer { v in
             moving.withUnsafeBufferPointer { a in
                 for j in 0..<PlaneFinder.directions {
                     let f = (rMin + simd_dot(normals[j], d) - rhoMin) / step
@@ -91,6 +90,29 @@ final class PlaneFinder {
                     }
                 }
             }
+        }
+    }
+
+    func add(position p: SIMD3<Float>, profile: [Float], rMin: Float) -> Bool {
+        if simd_distance(p, last) < 0.015 { return false }
+        guard profile.contains(where: { $0 > 0 }) else { return false }
+        last = p
+        let d = p - center, count = profile.count
+        if clutter.count != count {
+            clutter = [Float](repeating: 0, count: count)
+            moving = clutter
+        }
+        let alpha = max(0.05, 1 / Float(pings + 1))
+        for i in 0..<count {
+            clutter[i] += alpha * (profile[i] - clutter[i])
+            moving[i] = max(0, profile[i] - 1.2 * clutter[i])
+        }
+        vote(&votes, d, rMin)
+        if trail.count >= 24 {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            let other = trail[Int((seed >> 33) % UInt64(trail.count - 12))]
+            vote(&chance, other - center, rMin)
+            chancePings += 1
         }
         sum += d
         squares += d * d
@@ -118,21 +140,26 @@ final class PlaneFinder {
 
     func detect() {
         coverage = min(1, smallestSpread() / PlaneFinder.needed)
-        guard pings >= 30, coverage >= 1 else { planes = []; return }
+        guard pings >= 50, chancePings >= 20, coverage >= 1 else { planes = []; return }
         let bins = PlaneFinder.bins, count = PlaneFinder.directions
-        var top: Float = 0
+        var top: Float = 0, luck: Float = 0
         for b in 0..<bins { mean[b] = 0 }
         votes.withUnsafeBufferPointer { v in
-            for j in 0..<count {
-                let o = j * bins
-                for b in 0..<bins {
-                    let x = v[o + b]
-                    mean[b] += x
-                    if x > top { top = x }
+            chance.withUnsafeBufferPointer { c in
+                for j in 0..<count {
+                    let o = j * bins
+                    for b in 0..<bins {
+                        let x = v[o + b]
+                        mean[b] += x
+                        if x > top { top = x }
+                        if c[o + b] > luck { luck = c[o + b] }
+                    }
                 }
             }
         }
         guard top > 0 else { planes = []; return }
+        let floor = PlaneFinder.margin * luck * Float(pings) / Float(chancePings)
+        ratio = top / max(floor, 1e-9)
         for b in 0..<bins { mean[b] /= Float(count) }
         var candidates: [(value: Float, direction: Int, bin: Int, contrast: Float)] = []
         votes.withUnsafeBufferPointer { v in
@@ -140,7 +167,7 @@ final class PlaneFinder {
                 let o = j * bins
                 for b in 2..<(bins - 2) {
                     let x = v[o + b]
-                    if x < 0.3 * top || x < v[o + b - 1] || x < v[o + b + 1] { continue }
+                    if x < floor || x < v[o + b - 1] || x < v[o + b + 1] { continue }
                     let base = max(mean[b - 2], mean[b - 1], mean[b], mean[b + 1], mean[b + 2])
                     let contrast = x / (base + 1e-9)
                     if contrast >= PlaneFinder.minContrast { candidates.append((x, j, b, contrast)) }
@@ -182,7 +209,7 @@ final class PlaneFinder {
             }
             let rho = PlaneFinder.rhoMin + Float(bin) * PlaneFinder.step
             if found.contains(where: { simd_dot($0.normal, normal) > 0.5 && abs($0.rho - rho) < 0.35 }) { continue }
-            found.append(Plane(normal: normal, rho: rho, strength: c.value / top, contrast: c.contrast))
+            found.append(Plane(normal: normal, rho: rho, strength: c.value / floor, contrast: c.contrast))
             if found.count == 6 { break }
         }
         planes = found
@@ -206,7 +233,7 @@ final class PlaneFinder {
                     let x = Float(a) * 0.06, y = Float(b) * 0.06
                     if x * x + y * y > 0.64 { continue }
                     positions.append(middle + u * x + v * y)
-                    values.append(0.1 + 0.25 * plane.strength)
+                    values.append(min(0.5, 0.1 + 0.12 * plane.strength))
                 }
             }
             for i in stride(from: 0, to: trail.count, by: 2) {
