@@ -14,7 +14,7 @@ find_phone() {
   local list
   list="$(mktemp)"
   xcrun devicectl list devices --json-output "$list" >/dev/null 2>&1 || true
-  python3 -I -c "import json,sys; d=json.load(open(sys.argv[1]))['result']['devices']; print(next((x['hardwareProperties']['udid'] for x in d if x.get('hardwareProperties',{}).get('deviceType')=='iPhone' and x.get('connectionProperties',{}).get('pairingState')=='paired' and x.get('connectionProperties',{}).get('tunnelState')!='unavailable'), ''))" "$list" 2>/dev/null || true
+  python3 -I -c "import json,sys; d=json.load(open(sys.argv[1]))['result']['devices']; print(next((x['hardwareProperties']['udid'] for x in d if x.get('hardwareProperties',{}).get('deviceType')=='iPhone' and x.get('connectionProperties',{}).get('pairingState')=='paired'), ''))" "$list" 2>/dev/null || true
   rm -f "$list"
 }
 
