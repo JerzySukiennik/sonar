@@ -30,7 +30,27 @@ Open `index.html` in Chrome, press Start and allow the microphone. Use the built
 - Too loud is worse than too quiet: when the microphone peak passes about 1.0 the noise floor rises from -56 dB to -40 dB relative to the direct path.
 - Echoes out to about 4 m stand 15 to 20 dB above the floor.
 
+## iPhone: rough 3D map (`iOS/`)
+
+A native app that tries to turn the same echoes into a 3D map. Status: builds, signed, verified on synthetic data and off-screen on a Mac. Not yet tested on a real phone.
+
+- The phone plays 3 to 18 kHz chirps about 12 times a second and records with the bottom microphone.
+- ARKit gives the phone pose for every ping. One microphone only knows distance, so direction comes from moving the phone.
+- A slow background is subtracted from each impulse response, which removes the phone's own sound and keeps only echoes that change as the phone moves.
+- Each ping is backprojected into a 5 cm voxel grid (6.4 x 3.2 x 6.4 m) as spheres around the speaker position. Echoes that agree from many positions pile up on real surfaces.
+- Walls reflect like mirrors, so a ping paints only the patch of wall straight in front of it. Move the phone in every direction to paint more.
+- Every session is saved to `Documents/last.sonarlog` (raw audio and poses) for offline tuning.
+
+Build with `Scripts/ios.sh`: `mac` (Catalyst build for checks), `device` (sign and install over cable), `log` (pull the last session from the phone). Needs XcodeGen.
+
+Checks without a phone, on the Catalyst build:
+
+- `Sonar --dsp`: synthetic frames through the pulse compressor, prints the measured lag and echo range.
+- `Sonar --demo --shot out.png`: a synthetic room through the mapper and the renderer.
+
 ## Files
 
-- `index.html`: the whole app.
-- `Niepotrzebne/`: dev server and measurement scripts that drive the page in a real Chrome over CDP.
+- `index.html`: the browser echogram.
+- `iOS/`: the iPhone app (Swift, SceneKit, ARKit).
+- `Scripts/ios.sh`: build and install.
+- `Niepotrzebne/`: dev server, icon generator and measurement scripts that drive the page in a real Chrome over CDP.
